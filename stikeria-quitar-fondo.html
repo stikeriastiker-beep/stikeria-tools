@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Quitar Fondo sin dañar colores</title>
+<style>
+  body {
+    font-family: Arial, sans-serif;
+    background: #f3f4f6;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 15px;
+    padding: 20px;
+  }
+  h1 { color: #333; margin-bottom: 10px; }
+  canvas {
+    border: 1px solid #ccc;
+    border-radius: 10px;
+    background: white;
+    max-width: 350px;
+    max-height: 350px;
+  }
+  .buttons {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  button {
+    background: #4f46e5;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    padding: 10px 20px;
+    cursor: pointer;
+    font-size: 16px;
+  }
+  button:hover { background: #4338ca; }
+  input[type="file"] {
+    background: white;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    padding: 8px;
+  }
+</style>
+</head>
+<body>
+
+<h1>Quitar fondo del sticker</h1>
+
+<div class="buttons">
+  <input type="file" id="fileInput" accept="image/*">
+  <button id="removeBtn">Quitar fondo</button>
+  <button id="downloadBtn">Descargar PNG</button>
+</div>
+
+<canvas id="canvas"></canvas>
+
+<script>
+const fileInput = document.getElementById("fileInput");
+const removeBtn = document.getElementById("removeBtn");
+const downloadBtn = document.getElementById("downloadBtn");
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+let image = null;
+
+fileInput.addEventListener("change", e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    const img = new Image();
+    img.onload = () => {
+      const max = 350;
+      const scale = Math.min(max / img.width, max / img.height, 1);
+      canvas.width = img.width * scale;
+      canvas.height = img.height * scale;
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      image = img;
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+});
+
+removeBtn.addEventListener("click", () => {
+  if (!image) return;
+
+  const w = canvas.width, h = canvas.height;
+  const imgData = ctx.getImageData(0, 0, w, h);
+  const data = imgData.data;
+
+  // Detectar color de fondo promediando los bordes
+  const margin = 5;
+  let r = 0, g = 0, b = 0, count = 0;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (x < margin || y < margin || x >= w - margin || y >= h - margin) {
+        const i = (y * w + x) * 4;
+        r += data[i];
+        g += data[i + 1];
+        b += data[i + 2];
+        count++;
+      }
+    }
+  }
+  const bg = [r / count, g / count, b / count];
+
+  // Quitar fondo pero sin tocar colores cercanos
+  for (let i = 0; i < data.length; i += 4) {
+    const dr = data[i] - bg[0];
+    const dg = data[i + 1] - bg[1];
+    const db = data[i + 2] - bg[2];
+    const dist = Math.sqrt(dr * dr + dg * dg + db * db);
+
+    // Solo elimina los píxeles que son *muy* parecidos al fondo
+    if (dist < 35) { 
+      data[i + 3] = 0;
+    }
+  }
+
+  // Borde blanco mate
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i + 3] < 10) {
+      data[i] = 255;
+      data[i + 1] = 255;
+      data[i + 2] = 255;
+      data[i + 3] = 0;
+    }
+  }
+
+  ctx.putImageData(imgData, 0, 0);
+});
+
+downloadBtn.addEventListener("click", () => {
+  canvas.toBlob(blob => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "sticker_sin_fondo.png";
+    a.click();
+  });
+});
+</script>
+
+</body>
+</html>
