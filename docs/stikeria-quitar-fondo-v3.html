@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Quitar Fondo — Stikeria</title>
+<style>
+  body{font-family:Arial, sans-serif;background:#0f1014;color:#eef1f6;margin:0;padding:20px}
+  .box{max-width:760px;margin:auto;background:#151826;border:1px solid #262a3f;border-radius:16px;padding:16px;box-shadow:0 6px 24px rgba(0,0,0,.35)}
+  h2{text-align:center;margin-top:0}
+  button{padding:10px 14px;border-radius:10px;border:0;font-weight:800;cursor:pointer;margin:4px}
+  #btnUp{background:#2c7be5;color:#fff}
+  #btnGo{background:#34c38f;color:#fff}
+  #btnDl{background:#e83e8c;color:#fff}
+  .mini{display:flex;gap:14px;flex-wrap:wrap;justify-content:center;margin:10px 0}
+  .mini label{font-size:12px;color:#cfe1ff;display:flex;align-items:center;gap:6px}
+  .chip{background:#202540;border:1px solid #2f365c;border-radius:12px;padding:2px 8px}
+  canvas{width:100%;border-radius:10px;background:conic-gradient(#eee 0 25%, transparent 0 50%, #eee 0 75%, transparent 0) 0 0/26px 26px}
+</style>
+</head>
+
+<body>
+<div class="box">
+  <h2>Quitar Fondo — Stikeria</h2>
+
+  <button id="btnUp">Subir Imagen</button>
+  <input id="file" type="file" accept="image/*" style="display:none">
+  <button id="btnGo" disabled>Quitar Fondo</button>
+  <button id="btnDl" disabled>Descargar 512×512</button>
+
+  <div class="mini">
+    <label>🎯 Modo fondo:
+      <select id="bgMode">
+        <option value="auto">Auto (esquinas)</option>
+        <option value="click">Elegir con clic</option>
+      </select>
+      <span id="chip" class="chip">auto</span>
+    </label>
+
+    <label>🎚️ Tolerancia:
+      <input id="tol" type="range" min="20" max="100" value="60">
+      <span id="tolv" class="chip">60</span>
+    </label>
+
+    <label><input id="fillHoles" type="checkbox" checked> Rellenar huecos</label>
+  </div>
+
+  <canvas id="cv" width="900" height="900"></canvas>
+</div>
+
+<script>
+(function(){
+  const $=id=>document.getElementById(id);
+  const cv=$('cv'), ctx=cv.getContext('2d',{willReadFrequently:true});
+  const file=$('file'), btnUp=$('btnUp'), btnGo=$('btnGo'), btnDl=$('btnDl');
+  const bgMode=$('bgMode'), chip=$('chip'), tol=$('tol'), tolv=$('tolv'), fillHoles=$('fillHoles');
+
+  let img=null, W=0,H=0;
+  let bg={r:255,g:255,b:255};
+
+  tol.oninput=()=>tolv.textContent=tol.value;
+
+  btnUp.onclick=()=>file.click();
+
+  file.onchange=e=>{
+    const f=e.target.files[0];
+    if(!f) return;
+    img=new Image();
+    img.onload=()=>{
+      W=img.naturalWidth;H=img.naturalHeight;
+      cv.width=W;cv.height=H;
+      ctx.drawImage(img,0,0,W,H);
+      bg = autoBG();
+      chip.textContent="auto";
+      btnGo.disabled=false;
+      btnDl.disabled=false;
+    };
+    img.src=URL.createObjectURL(f);
+  };
+
+  cv.addEventListener('click',e=>{
+    if(bgMode.value!=="click") return;
+    const r=cv.getBoundingClientRect();
+    const x=Math.floor((e.clientX-r.left)/r.width*W);
+    const y=Math.floor((e.clientY-r.top)/r.height*H);
+    const p=ctx.getImageData(x,y,1,1).data;
+    bg={r:p[0],g:p[1],b:p[2]};
+    chip.textContent="clic";
+  });
+
+  btnGo.onclick=()=>{
+    let im=ctx.getImageData(0,0,W,H);
+    let mask = buildMask(im, Number(tol.value)/100, bg);
+    if(fillHoles.checked) mask = fill(mask,W,H);
+    applyAlpha(im, mask);
+    ctx.putImageData(im,0,0);
+  };
+
+  btnDl.onclick=()=>{
+    const out=document.createElement('canvas'); out.width=512; out.height=512;
+    const c=out.getContext('2d');
+    c.imageSmoothingEnabled=true; c.imageSmoothingQuality='high';
+    const s=Math.min(512/W,512/H), nw=W*s, nh=H*s;
+    c.drawImage(cv, (512-nw)/2, (512-nh)/2, nw, nh);
+    const a=document.createElement('a');
+    a.download="stiker512.png";
+    a.href=out.toDataURL("image/png");
+    a.click();
+  };
+
+  function autoBG(){
+    const g=ctx, s=30;
+    const A=g.getImageData(0,0,s,s).data;
+    const B=g.getImageData(W-s,0,s,s).data;
+    const C=g.getImageData(0,H-s,s,s).data;
+    const D=g.getImageData(W-s,H-s,s,s).data;
+    let R=0,G=0,Bb=0,N=0;
+    [A,B,C,D].forEach(arr=>{
+      for(let i=0;i<arr.length;i+=4){R+=arr[i];G+=arr[i+1];Bb+=arr[i+2];N++;}
+    });
+    return {r:R/N,g:G/N,b:Bb/N};
+  }
+
+  function buildMask(im,T,bg){
+    const d=im.data, w=im.width, h=im.height;
+    const out=new Uint8Array(w*h);
+    for(let i=0,p=0;i<d.length;i+=4,p++){
+      const r=d[i], g=d[i+1], b=d[i+2];
+      const white=(Math.max(r,g,b)>245 && Math.min(r,g,b)>225);
+      const dist = Math.sqrt((r-bg.r)**2+(g-bg.g)**2+(b-bg.b)**2)/441;
+      out[p]=(!white && dist<=T)?1:0;
+    }
+    return flood(out,w,h);
+  }
+
+  function flood(mask,w,h){
+    const out=new Uint8Array(mask.length);
+    const st=[];
+    for(let x=0;x<w;x++){
+      if(mask[x]){out[x]=1;st.push(x,0);}
+      if(mask[(h-1)*w+x]){out[(h-1)*w+x]=1;st.push(x,h-1);}
+    }
+    for(let y=0;y<h;y++){
+      if(mask[y*w]){out[y*w]=1;st.push(0,y);}
+      if(mask[y*w+(w-1)]){out[y*w+(w-1)]=1;st.push(w-1,y);}
+    }
+    while(st.length){
+      const y=st.pop(), x=st.pop();
+      const id=y*w+x;
+      [[x-1,y],[x+1,y],[x,y-1],[x,y+1]].forEach(([X,Y])=>{
+        if(X>=0&&Y>=0&&X<w&&Y<h){
+          const p=Y*w+X;
+          if(mask[p]&&!out[p]){out[p]=1;st.push(X,Y);}
+        }
+      });
+    }
+    const stick=new Uint8ClampedArray(w*h);
+    for(let p=0;p<w*h;p++) stick[p]=out[p]?0:255;
+    return stick;
+  }
+
+  function fill(mask,w,h){
+    const inv=new Uint8Array(mask.length);
+    for(let p=0;p<w*h;p++) inv[p]=mask[p]?0:1;
+    const holes=flood(inv,w,h);
+    for(let p=0;p<w*h;p++) if(holes[p]===255) mask[p]=255;
+    return mask;
+  }
+
+  function applyAlpha(im,mask){
+    const d=im.data;
+    for(let i=0,p=0;i<d.length;i+=4,p++){
+      d[i+3]=mask[p];
+    }
+  }
+
+})();
+</script>
+</body>
+</html>
