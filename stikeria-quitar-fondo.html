@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Quitar Fondo — Stikeria (borde liso)</title>
+<title>Quitar Fondo — Stikeria (borde liso sin manchas)</title>
 <style>
   body{font-family:Arial, sans-serif;background:#0f1014;color:#eef1f6;margin:0;padding:20px}
   .box{max-width:760px;margin:auto;background:#151826;border:1px solid #262a3f;border-radius:16px;padding:16px;box-shadow:0 6px 24px rgba(0,0,0,.35)}
@@ -36,6 +36,7 @@
     </label>
     <label><input id="holes" type="checkbox" checked> Quitar islas internas</label>
     <label><input id="smoothEdge" type="checkbox" checked> Borde liso (anti-picos)</label>
+    <label><input id="protectColors" type="checkbox" checked> Proteger colores (vidrio/amarillos)</label>
   </div>
 
   <canvas id="cv"></canvas>
@@ -46,7 +47,7 @@
   var q = id => document.getElementById(id);
   var cv=q('cv'), ctx=cv.getContext('2d',{willReadFrequently:true});
   var btnUp=q('btnUp'), file=q('file'), btnGo=q('btnGo'), btnDl=q('btnDl');
-  var tol=q('tol'), tolv=q('tolv'), holes=q('holes'), smoothEdge=q('smoothEdge');
+  var tol=q('tol'), tolv=q('tolv'), holes=q('holes'), smoothEdge=q('smoothEdge'), protectColors=q('protectColors');
 
   var img=null, W=0, H=0;
 
@@ -68,13 +69,12 @@
   btnGo.onclick=function(){
     if(!img) return;
     var src=ctx.getImageData(0,0,W,H);
-    var mask = buildMask(src, Number(tol.value)/100, holes.checked);
-    applyMaskSmooth(src, mask, smoothEdge.checked);
+    var mask = buildMask(src, Number(tol.value)/100, holes.checked, protectColors.checked);
+    applyMaskSmoothBoundaryOnly(src, mask, smoothEdge.checked);
     btnDl.disabled=false;
   };
 
   btnDl.onclick=function(){
-    // exporta 512x512 con reescalado de buena calidad
     var out=document.createElement('canvas'); out.width=512; out.height=512;
     var c=out.getContext('2d');
     c.imageSmoothingEnabled=true; c.imageSmoothingQuality='high';
@@ -96,7 +96,7 @@
     }
     return {h:h,s:s,v:v};
   }
-  function hsvDistW(a,b){ // peso alto al tono (h)
+  function hsvDistW(a,b){
     var dh=Math.abs(a.h-b.h); dh=Math.min(dh,1-dh);
     var ds=a.s-b.s, dv=a.v-b.v;
     return Math.sqrt( (5*dh*dh)+(2*ds*ds)+(1*dv*dv) );
@@ -151,56 +151,65 @@
     }
     return out;
   }
+  function binTo255(u8){ var out=new Uint8ClampedArray(u8.length); for(var i=0;i<u8.length;i++) out[i]=u8[i]?255:0; return out; }
+  function to01(u8){ var out=new Uint8Array(u8.length); for(var i=0;i<u8.length;i++) out[i]=u8[i]>0?1:0; return out; }
 
-  // ===== Construcción de máscara con anti-islas =====
-  function buildMask(imgData, T, removeHoles){
+  // ===== Máscara con islas + protecciones de color =====
+  function buildMask(imgData, T, removeHoles, protectCol){
     var d=imgData.data, w=imgData.width, h=imgData.height;
     var bg = sampleBG(d,w,h);
     var bgH = rgb2hsv(bg.r,bg.g,bg.b);
 
-    // 1) candidatos a fondo por color
+    // 1) candidatos a fondo por color (con protecciones)
     var cand=new Uint8Array(w*h);
     for(var i=0,p=0;i<d.length;i+=4,p++){
       var r=d[i], g=d[i+1], b=d[i+2];
       var hsv=rgb2hsv(r,g,b);
       var isBg = (hsvDistW(hsv,bgH) <= T);
-      // blanco puro = sticker (protege borde blanco)
+
+      // protege blancos puros (borde blanco del sticker)
       var mx=Math.max(r,g,b), mn=Math.min(r,g,b);
       if(mx>245 && mn>225) isBg=false;
+
+      if(protectCol){
+        // protege amarillos/altas saturaciones alejadas del fondo
+        var hueDiff = Math.min(Math.abs(hsv.h - bgH.h), 1-Math.abs(hsv.h - bgH.h));
+        if(hsv.s>0.28 && hueDiff>0.08) isBg=false;
+        // protege vidrios/azules (fríos saturados)
+        if(hsv.s>0.22 && (hsv.h<0.2 || hsv.h>0.55)) isBg=false;
+      }
+
       cand[p]=isBg?1:0;
     }
 
-    // 2) abrir una vez para cortar “hilos” de fondo
+    // 2) abrir para cortar “hilos”
     var open = erode(binTo255(cand), w, h);
     open = dilate(open, w, h);
     var open1 = to01(open);
 
-    // 3) flood desde bordes sobre open1 => fondo conectado al borde
+    // 3) fondo conectado al borde (flood)
     var bgMask = new Uint8Array(w*h);
     var qx=[], qy=[];
     function push(x,y){ qx.push(x); qy.push(y); }
     function pop(){ return [qx.pop(), qy.pop()]; }
     for(var x=0;x<w;x++){ if(open1[x]){bgMask[x]=1; push(x,0);} if(open1[(h-1)*w+x]){bgMask[(h-1)*w+x]=1; push(x,h-1);} }
     for(var y=0;y<h;y++){ if(open1[y*w]){bgMask[y*w]=1; push(0,y);} if(open1[y*w+(w-1)]){bgMask[y*w+(w-1)]=1; push(w-1,y);} }
-
     while(qx.length){
-      var XY=pop(), X=XY[0], Y=XY[1];
-      var id=Y*w+X;
+      var XY=pop(), X=XY[0], Y=XY[1], id=Y*w+X;
       if(X>0){ var i1=id-1; if(!bgMask[i1] && open1[i1]){bgMask[i1]=1; push(X-1,Y);} }
       if(X<w-1){ var i2=id+1; if(!bgMask[i2] && open1[i2]){bgMask[i2]=1; push(X+1,Y);} }
       if(Y>0){ var i3=id-w; if(!bgMask[i3] && open1[i3]){bgMask[i3]=1; push(X,Y-1);} }
       if(Y<h-1){ var i4=id+w; if(!bgMask[i4] && open1[i4]){bgMask[i4]=1; push(X,Y+1);} }
     }
 
-    // 4) islas internas: regiones candidatas que no tocan borde
+    // 4) islas internas (fondo encerrado)
     if(removeHoles){
       var vis=new Uint8Array(w*h);
       for(var yy=1; yy<h-1; yy++){
         for(var xx=1; xx<w-1; xx++){
           var id0=yy*w+xx;
           if(vis[id0] || bgMask[id0] || open1[id0]!==1) { vis[id0]=1; continue; }
-          var stack=[id0], region=[], touchesEdge=false;
-          vis[id0]=1;
+          var stack=[id0], region=[], touchesEdge=false; vis[id0]=1;
           while(stack.length){
             var cur=stack.pop(); region.push(cur);
             var cx=cur%w, cy=(cur-cx)/w;
@@ -216,18 +225,14 @@
               stack.push(nb);
             }
           }
-          if(!touchesEdge){
-            for(var r=0;r<region.length;r++) bgMask[region[r]]=1; // también fondo
-          }
+          if(!touchesEdge){ for(var rgn=0;rgn<region.length;rgn++) bgMask[region[rgn]]=1; }
         }
       }
     }
 
-    // 5) máscara del sticker (invertir fondo)
+    // 5) máscara del sticker + anti-halo leve (recorta 1, repone 2)
     var sticker=new Uint8ClampedArray(w*h);
     for(var p=0;p<sticker.length;p++) sticker[p]=bgMask[p]?0:255;
-
-    // Anti-halo leve (recorta 1 y repone 2)
     sticker = erode(sticker,w,h);
     sticker = dilate(sticker,w,h);
     sticker = dilate(sticker,w,h);
@@ -235,74 +240,63 @@
     return sticker;
   }
 
-  function binTo255(u8){
-    var out=new Uint8ClampedArray(u8.length);
-    for(var i=0;i<u8.length;i++) out[i]=u8[i]?255:0;
-    return out;
-  }
-  function to01(u8){
-    var out=new Uint8Array(u8.length);
-    for(var i=0;i<u8.length;i++) out[i]=u8[i]>0?1:0;
-    return out;
-  }
-
-  // ===== Aplicar máscara con borde LISO (suavizado de 1 px solo en ALFA) =====
-  function applyMaskSmooth(src, mask, doSmooth){
+  // ===== Aplicar máscara con borde liso SOLO en frontera (sin tocar color) =====
+  function applyMaskSmoothBoundaryOnly(src, mask, doSmooth){
     var d=src.data, w=src.width, h=src.height;
 
-    // 1) construir alfa base
+    // alpha base 0/1
     var A = new Float32Array(mask.length);
     for (var i=0;i<mask.length;i++) A[i] = mask[i]/255;
 
-    // 2) blur muy pequeño (1 px) SOLO si se pide “borde liso”
     if(doSmooth){
+      // detectar frontera: píxel con A=1 y algún vecino A=0
+      var boundary = new Uint8Array(A.length);
+      for(let y=1;y<h-1;y++){
+        for(let x=1;x<w-1;x++){
+          let id=y*w+x;
+          if(A[id]===1){
+            if(A[id-1]===0 || A[id+1]===0 || A[id-w]===0 || A[id+w]===0){
+              boundary[id]=1;
+            }
+          }
+        }
+      }
+      // blur muy suave 3x3 SOLO en frontera
       var B = new Float32Array(A.length);
       for(let y=1;y<h-1;y++){
         for(let x=1;x<w-1;x++){
-          let id=y*w+x, s=0;
-          s+=A[id]; s+=A[id-1]; s+=A[id+1]; s+=A[id-w]; s+=A[id+w];
-          s+=A[id-w-1]; s+=A[id-w+1]; s+=A[id+w-1]; s+=A[id+w+1];
-          B[id]=s/9; // box blur 3x3
+          let id=y*w+x;
+          if(boundary[id]){
+            let s=0;
+            s+=A[id]; s+=A[id-1]; s+=A[id+1]; s+=A[id-w]; s+=A[id+w];
+            s+=A[id-w-1]; s+=A[id-w+1]; s+=A[id+w-1]; s+=A[id+w+1];
+            B[id]=s/9;
+          }else{
+            B[id]=A[id]; // interior y fondo se mantienen exactos
+          }
         }
       }
-      // quita el blur “fantasma” en bordes externos
-      for(let x=0;x<w;x++){ B[x]=A[x]; B[(h-1)*w+x]=A[(h-1)*w+x]; }
-      for(let y=0;y<h;y++){ B[y*w]=A[y*w]; B[y*w+(w-1)]=A[y*w+(w-1)]; }
       A = B;
     }
 
-    // 3) endurecer un poco para que no quede brillo gris (gamma suave)
+    // endurecer un poco para evitar grises
     for(let i=0;i<A.length;i++){
       let a=A[i];
-      if(a<0.02) a=0;          // fondo total
-      else if(a>0.98) a=1;     // sticker total
-      else a = Math.pow(a, 0.8); // ligera dureza sin picos
+      if(a<0.02) a=0;
+      else if(a>0.98) a=1;
+      else a = Math.pow(a, 0.85);
       A[i]=a;
     }
 
-    // 4) decontaminación leve SOLO en borde semitransparente (quita tinte del fondo)
-    var bg = sampleBG(d,w,h);
+    // composición: NO tocamos el color. protegemos blanco puro.
     for(let i=0,p=0;i<d.length;i+=4,p++){
-      let r=d[i], g=d[i+1], b=d[i+2];
-      let a=A[p];
+      let r=d[i], g=d[i+1], b=d[i+2], a=A[p];
 
-      // proteger blanco puro (borde blanco del sticker)
       let mx=Math.max(r,g,b), mn=Math.min(r,g,b);
       if(mx>245 && mn>225){ d[i]=255; d[i+1]=255; d[i+2]=255; d[i+3]=255; continue; }
 
-      if(a<=0){ d[i+3]=0; continue; }
-      if(a>=1){ d[i+3]=255; continue; }
-
-      // decontamina
-      let R=(r-(1-a)*bg.r)/a;
-      let G=(g-(1-a)*bg.g)/a;
-      let B=(b-(1-a)*bg.b)/a;
-      d[i]  = Math.max(0, Math.min(255, R));
-      d[i+1]= Math.max(0, Math.min(255, G));
-      d[i+2]= Math.max(0, Math.min(255, B));
-      d[i+3]= Math.round(a*255);
+      d[i+3] = Math.round(a*255);
     }
-
     ctx.putImageData(src,0,0);
   }
 })();
