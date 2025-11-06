@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Quitar Fondo — Stikeria (borde liso sin manchas)</title>
+<title>Quitar Fondo — Stikeria (borde liso, sin manchas)</title>
 <style>
   body{font-family:Arial, sans-serif;background:#0f1014;color:#eef1f6;margin:0;padding:20px}
   .box{max-width:760px;margin:auto;background:#151826;border:1px solid #262a3f;border-radius:16px;padding:16px;box-shadow:0 6px 24px rgba(0,0,0,.35)}
@@ -13,15 +13,16 @@
   #btnUp{background:#2c7be5;color:#fff}
   #btnGo{background:#34c38f;color:#fff}
   #btnDl{background:#e83e8c;color:#fff}
-  canvas{width:100%;background:#0f111a;border-radius:10px}
-  .mini{display:flex;gap:12px;justify-content:center;align-items:center;margin:8px 0 4px}
+  canvas{width:100%;background:#0f111a;border-radius:10px;cursor:crosshair}
+  .mini{display:flex;gap:12px;flex-wrap:wrap;justify-content:center;align-items:center;margin:8px 0 4px}
   .mini label{font-size:12px;color:#cfe1ff;display:flex;align-items:center;gap:6px}
   input[type="range"]{accent-color:#2c7be5}
+  .chip{background:#202540;border:1px solid #2f365c;border-radius:999px;padding:2px 8px}
 </style>
 </head>
 <body>
 <div class="box">
-  <h2>Quitar Fondo — Stikeria (borde liso)</h2>
+  <h2>Quitar Fondo — Stikeria (borde liso, sin manchas)</h2>
   <div class="bar">
     <button id="btnUp">Subir imagen</button>
     <input id="file" type="file" accept="image/png,image/jpeg,image/webp" style="display:none">
@@ -30,272 +31,291 @@
   </div>
 
   <div class="mini">
+    <label>🎯 Fondo:
+      <select id="bgMode">
+        <option value="auto">Auto (esquinas)</option>
+        <option value="click">Elegir con clic</option>
+      </select>
+      <span id="bgChip" class="chip">auto</span>
+    </label>
     <label>🎚️ Tolerancia
       <input id="tol" type="range" min="20" max="100" value="60">
-      <span id="tolv">60</span>
+      <span id="tolv" class="chip">60</span>
+    </label>
+    <label>🧷 Banda borde (px)
+      <input id="band" type="range" min="1" max="5" value="2">
+      <span id="bandv" class="chip">2</span>
     </label>
     <label><input id="holes" type="checkbox" checked> Quitar islas internas</label>
-    <label><input id="smoothEdge" type="checkbox" checked> Borde liso (anti-picos)</label>
-    <label><input id="protectColors" type="checkbox" checked> Proteger colores (vidrio/amarillos)</label>
+    <label><input id="protectColors" type="checkbox" checked> Proteger vidrios/amarillos</label>
+    <label><input id="smoothEdge" type="checkbox" checked> Borde liso</label>
   </div>
 
-  <canvas id="cv"></canvas>
+  <canvas id="cv" title="Si 'Fondo: Elegir con clic' está activo, toca el fondo"></canvas>
 </div>
 
 <script>
 (function(){
-  var q = id => document.getElementById(id);
-  var cv=q('cv'), ctx=cv.getContext('2d',{willReadFrequently:true});
-  var btnUp=q('btnUp'), file=q('file'), btnGo=q('btnGo'), btnDl=q('btnDl');
-  var tol=q('tol'), tolv=q('tolv'), holes=q('holes'), smoothEdge=q('smoothEdge'), protectColors=q('protectColors');
+  const q=id=>document.getElementById(id);
+  const cv=q('cv'), ctx=cv.getContext('2d',{willReadFrequently:true});
+  const btnUp=q('btnUp'), file=q('file'), btnGo=q('btnGo'), btnDl=q('btnDl');
+  const tol=q('tol'), tolv=q('tolv'), holes=q('holes'), protectColors=q('protectColors'), smoothEdge=q('smoothEdge');
+  const band=q('band'), bandv=q('bandv'), bgMode=q('bgMode'), bgChip=q('bgChip');
 
-  var img=null, W=0, H=0;
+  let img=null, W=0, H=0, bg={r:255,g:255,b:255};
 
-  tol.oninput=function(){ tolv.textContent=tol.value; };
+  tol.oninput=()=>tolv.textContent=tol.value;
+  band.oninput=()=>bandv.textContent=band.value;
 
-  btnUp.onclick=function(){ file.click(); };
-  file.onchange=function(e){
-    var f=e.target.files && e.target.files[0]; if(!f) return;
+  btnUp.onclick=()=>file.click();
+  file.onchange=e=>{
+    const f=e.target.files?.[0]; if(!f) return;
     img=new Image();
-    img.onload=function(){
+    img.onload=()=>{
       W=img.naturalWidth; H=img.naturalHeight;
       cv.width=W; cv.height=H;
       ctx.clearRect(0,0,W,H); ctx.drawImage(img,0,0,W,H);
       btnGo.disabled=false; btnDl.disabled=true;
+      bg = autoSampleBackground(cv); setChip(bg);
     };
     img.src=URL.createObjectURL(f);
   };
 
-  btnGo.onclick=function(){
+  cv.addEventListener('click', e=>{
+    if(bgMode.value!=="click" || !img) return;
+    const r=cv.getBoundingClientRect();
+    const x=Math.floor((e.clientX-r.left)*(cv.width/r.width));
+    const y=Math.floor((e.clientY-r.top)*(cv.height/r.height));
+    const p=ctx.getImageData(x,y,1,1).data;
+    bg={r:p[0],g:p[1],b:p[2]}; setChip(bg);
+  });
+
+  btnGo.onclick=()=>{
     if(!img) return;
-    var src=ctx.getImageData(0,0,W,H);
-    var mask = buildMask(src, Number(tol.value)/100, holes.checked, protectColors.checked);
-    applyMaskSmoothBoundaryOnly(src, mask, smoothEdge.checked);
+    if(bgMode.value==="auto"){ bg=autoSampleBackground(cv); setChip(bg); }
+    const src=ctx.getImageData(0,0,W,H);
+    const {mask} = buildTrimapAndMask(src, Number(tol.value)/100, holes.checked, protectColors.checked);
+    applyMaskAlphaOnly(src, mask, smoothEdge.checked, Number(band.value));
     btnDl.disabled=false;
   };
 
-  btnDl.onclick=function(){
-    var out=document.createElement('canvas'); out.width=512; out.height=512;
-    var c=out.getContext('2d');
-    c.imageSmoothingEnabled=true; c.imageSmoothingQuality='high';
-    var s=Math.min(512/W,512/H), nw=W*s, nh=H*s;
+  btnDl.onclick=()=>{
+    const out=document.createElement('canvas'); out.width=512; out.height=512;
+    const c=out.getContext('2d'); c.imageSmoothingEnabled=true; c.imageSmoothingQuality='high';
+    const s=Math.min(512/W,512/H), nw=W*s, nh=H*s;
     c.clearRect(0,0,512,512);
-    c.drawImage(cv, (512-nw)/2, (512-nh)/2, nw, nh);
-    var a=document.createElement('a'); a.download='sticker_512.png'; a.href=out.toDataURL('image/png'); a.click();
+    c.drawImage(cv,(512-nw)/2,(512-nh)/2,nw,nh);
+    const a=document.createElement('a'); a.download='sticker_512.png'; a.href=out.toDataURL('image/png'); a.click();
   };
 
-  // ===== Utiles de color / HSV =====
+  function setChip(c){ bgChip.textContent = `rgb(${c.r|0},${c.g|0},${c.b|0})`; }
+
+  // ------- Color utils (HSV + OKLab approx) -------
   function rgb2hsv(r,g,b){
     r/=255; g/=255; b/=255;
-    var max=Math.max(r,g,b), min=Math.min(r,g,b), d=max-min, h=0, s=max===0?0:d/max, v=max;
-    if(d!==0){
-      if(max===r){ h=(g-b)/d+(g<b?6:0); }
-      else if(max===g){ h=(b-r)/d+2; }
-      else { h=(r-g)/d+4; }
-      h/=6;
-    }
-    return {h:h,s:s,v:v};
+    const max=Math.max(r,g,b), min=Math.min(r,g,b), d=max-min;
+    let h=0, s=max===0?0:d/max, v=max;
+    if(d!==0){ if(max===r){h=(g-b)/d+(g<b?6:0);} else if(max===g){h=(b-r)/d+2;} else {h=(r-g)/d+4;} h/=6; }
+    return {h,s,v};
   }
-  function hsvDistW(a,b){
-    var dh=Math.abs(a.h-b.h); dh=Math.min(dh,1-dh);
-    var ds=a.s-b.s, dv=a.v-b.v;
-    return Math.sqrt( (5*dh*dh)+(2*ds*ds)+(1*dv*dv) );
+  // OKLab (rápido aprox) para delta de color más estable que RGB
+  function srgbToLinear(u){ u/=255; return u<=0.04045?u/12.92:Math.pow((u+0.055)/1.055,2.4); }
+  function rgb2oklab(r,g,b){
+    const R=srgbToLinear(r), G=srgbToLinear(g), B=srgbToLinear(b);
+    const l = 0.4122214708*R + 0.5363325363*G + 0.0514459929*B;
+    const m = 0.2119034982*R + 0.6806995451*G + 0.1073969566*B;
+    const s = 0.0883024619*R + 0.2817188376*G + 0.6299787005*B;
+    const l_ = Math.cbrt(l), m_ = Math.cbrt(m), s_ = Math.cbrt(s);
+    return {
+      L: 0.2104542553*l_ + 0.7936177850*m_ - 0.0040720468*s_,
+      a: 1.9779984951*l_ - 2.4285922050*m_ + 0.4505937099*s_,
+      b: 0.0259040371*l_ + 0.7827717662*m_ - 0.8086757660*s_
+    };
+  }
+  function deltaOk(a,b){ const dL=a.L-b.L, da=a.a-b.a, db=a.b-b.b; return Math.sqrt(dL*dL+da*da+db*db); }
+
+  // ------- Edge detection -------
+  function toGray(data,w,h){ const g=new Uint8ClampedArray(w*h); for(let i=0,p=0;i<data.length;i+=4,p++){ g[p]=(0.299*data[i]+0.587*data[i+1]+0.114*data[i+2])|0; } return g; }
+  function sobel(gray,w,h){ const out=new Uint8ClampedArray(w*h);
+    for(let y=1;y<h-1;y++){ for(let x=1;x<w-1;x++){
+      const i=y*w+x;
+      const gx=-gray[i-w-1]-2*gray[i-1]-gray[i+w-1]+gray[i-w+1]+2*gray[i+1]+gray[i+w+1];
+      const gy=-gray[i-w-1]-2*gray[i-w]-gray[i-w+1]+gray[i+w-1]+2*gray[i+w]+gray[i+w+1];
+      out[i]=Math.min(255, Math.hypot(gx,gy)|0);
+    }} return out;
   }
 
-  function sampleBG(data,w,h){
-    var s=Math.max(6, Math.floor(Math.min(w,h)*0.06));
-    var sum=[0,0,0], n=0;
-    function accum(x0,y0){
-      for(var y=y0;y<y0+s;y++){
-        for(var x=x0;x<x0+s;x++){
-          var i=(y*w+x)*4; sum[0]+=data[i]; sum[1]+=data[i+1]; sum[2]+=data[i+2]; n++;
-        }
-      }
-    }
-    accum(0,0); accum(w-s,0); accum(0,h-s); accum(w-s,h-s);
-    return {r:sum[0]/n, g:sum[1]/n, b:sum[2]/n};
+  // ------- Morphology -------
+  function erode(mask,w,h){ const src=mask, out=new Uint8ClampedArray(src.length);
+    for(let y=0;y<h;y++){ for(let x=0;x<w;x++){
+      const id=y*w+x; if(src[id]===0){ out[id]=0; continue; }
+      let keep=255;
+      for(let yy=y-1;yy<=y+1;yy++){ for(let xx=x-1;xx<=x+1;xx++){
+        if(xx<0||yy<0||xx>=w||yy>=h) continue;
+        if(src[yy*w+xx]===0){ keep=0; break; }
+      } if(!keep) break; }
+      out[id]=keep;
+    }} return out;
+  }
+  function dilate(mask,w,h){ const src=mask, out=new Uint8ClampedArray(src.length);
+    for(let y=0;y<h;y++){ for(let x=0;x<w;x++){
+      const id=y*w+x; if(src[id]===255){ out[id]=255; continue; }
+      let on=0;
+      for(let yy=y-1;yy<=y+1;yy++){ for(let xx=x-1;xx<=x+1;xx++){
+        if(xx<0||yy<0||xx>=w||yy>=h) continue;
+        if(src[yy*w+xx]===255){ on=1; break; }
+      } if(on) break; }
+      out[id]=on?255:0;
+    }} return out;
   }
 
-  // ===== Morfología binaria (3x3) sin difuminar =====
-  function erode(mask,w,h){
-    var src=mask, out=new Uint8ClampedArray(src.length);
-    for(var y=0;y<h;y++){
-      for(var x=0;x<w;x++){
-        var id=y*w+x; if(src[id]===0){ out[id]=0; continue; }
-        var keep=255;
-        for(var yy=y-1;yy<=y+1;yy++){
-          for(var xx=x-1;xx<=x+1;xx++){
-            if(xx<0||yy<0||xx>=w||yy>=h) continue;
-            if(src[yy*w+xx]===0){ keep=0; break; }
-          } if(!keep) break;
-        }
-        out[id]=keep;
-      }
-    }
-    return out;
+  // ------- Background sampling -------
+  function autoSampleBackground(c){
+    const cx=c.getContext('2d'), w=c.width, h=c.height;
+    const s=Math.max(6,Math.floor(Math.min(w,h)*0.06));
+    const patches=[ cx.getImageData(0,0,s,s).data, cx.getImageData(w-s,0,s,s).data, cx.getImageData(0,h-s,s,s).data, cx.getImageData(w-s,h-s,s,s).data ];
+    let R=0,G=0,B=0,N=0; for(const data of patches){ for(let i=0;i<data.length;i+=4){ R+=data[i]; G+=data[i+1]; B+=data[i+2]; N++; } }
+    return {r:R/N, g:G/N, b:B/N};
   }
-  function dilate(mask,w,h){
-    var src=mask, out=new Uint8ClampedArray(src.length);
-    for(var y=0;y<h;y++){
-      for(var x=0;x<w;x++){
-        var id=y*w+x; if(src[id]===255){ out[id]=255; continue; }
-        var on=0;
-        for(var yy=y-1;yy<=y+1;yy++){
-          for(var xx=x-1;xx<=x+1;xx++){
-            if(xx<0||yy<0||xx>=w||yy>=h) continue;
-            if(src[yy*w+xx]===255){ on=1; break; }
-          } if(on) break;
-        }
-        out[id]=on?255:0;
-      }
-    }
-    return out;
-  }
-  function binTo255(u8){ var out=new Uint8ClampedArray(u8.length); for(var i=0;i<u8.length;i++) out[i]=u8[i]?255:0; return out; }
-  function to01(u8){ var out=new Uint8Array(u8.length); for(var i=0;i<u8.length;i++) out[i]=u8[i]>0?1:0; return out; }
 
-  // ===== Máscara con islas + protecciones de color =====
-  function buildMask(imgData, T, removeHoles, protectCol){
-    var d=imgData.data, w=imgData.width, h=imgData.height;
-    var bg = sampleBG(d,w,h);
-    var bgH = rgb2hsv(bg.r,bg.g,bg.b);
+  // ------- Build trimap & mask (sin tocar color) -------
+  function buildTrimapAndMask(src, T, removeHoles, protectCol){
+    const d=src.data, w=src.width, h=src.height;
+    const bgHSV=rgb2hsv(bg.r,bg.g,bg.b);
+    const bgLab=rgb2oklab(bg.r,bg.g,bg.b);
+    const edges = sobel(toGray(d,w,h), w, h);
+    const edgeThr = 24; // mayor = más protección
 
-    // 1) candidatos a fondo por color (con protecciones)
-    var cand=new Uint8Array(w*h);
-    for(var i=0,p=0;i<d.length;i+=4,p++){
-      var r=d[i], g=d[i+1], b=d[i+2];
-      var hsv=rgb2hsv(r,g,b);
-      var isBg = (hsvDistW(hsv,bgH) <= T);
+    // 1) Clasificación por deltaOk + HSV y protecciones
+    const cand=new Uint8Array(w*h);
+    for(let i=0,p=0;i<d.length;i+=4,p++){
+      const r=d[i], g=d[i+1], b=d[i+2];
+      const hsv=rgb2hsv(r,g,b);
+      const lab=rgb2oklab(r,g,b);
+      let isBg = (deltaOk(lab,bgLab) <= (T*0.9 + 0.12)) || (hsvDist(hsv,bgHSV) <= T); // doble criterio
 
-      // protege blancos puros (borde blanco del sticker)
-      var mx=Math.max(r,g,b), mn=Math.min(r,g,b);
+      // proteger blanco puro
+      const mx=Math.max(r,g,b), mn=Math.min(r,g,b);
       if(mx>245 && mn>225) isBg=false;
 
-      if(protectCol){
-        // protege amarillos/altas saturaciones alejadas del fondo
-        var hueDiff = Math.min(Math.abs(hsv.h - bgH.h), 1-Math.abs(hsv.h - bgH.h));
-        if(hsv.s>0.28 && hueDiff>0.08) isBg=false;
-        // protege vidrios/azules (fríos saturados)
-        if(hsv.s>0.22 && (hsv.h<0.2 || hsv.h>0.55)) isBg=false;
-      }
+      // proteger bordes fuertes
+      if(edges[p] > edgeThr) isBg=false;
 
+      if(protectCol){
+        // proteger saturados (vidrios/amarillos) lejos del tono del fondo
+        const hueDiff = Math.min(Math.abs(hsv.h - bgHSV.h), 1-Math.abs(hsv.h - bgHSV.h));
+        if(hsv.s>0.28 && hueDiff>0.08) isBg=false;
+        if(hsv.s>0.22 && (hsv.h<0.20 || hsv.h>0.55)) isBg=false;
+      }
       cand[p]=isBg?1:0;
     }
 
-    // 2) abrir para cortar “hilos”
-    var open = erode(binTo255(cand), w, h);
-    open = dilate(open, w, h);
-    var open1 = to01(open);
+    // 2) abrir una vez para cortar hilos
+    let open=erode(binTo255(cand), w, h); open=dilate(open,w,h);
+    const open01=new Uint8Array(open.length); for(let i=0;i<open.length;i++) open01[i]=open[i]>0?1:0;
 
-    // 3) fondo conectado al borde (flood)
-    var bgMask = new Uint8Array(w*h);
-    var qx=[], qy=[];
-    function push(x,y){ qx.push(x); qy.push(y); }
-    function pop(){ return [qx.pop(), qy.pop()]; }
-    for(var x=0;x<w;x++){ if(open1[x]){bgMask[x]=1; push(x,0);} if(open1[(h-1)*w+x]){bgMask[(h-1)*w+x]=1; push(x,h-1);} }
-    for(var y=0;y<h;y++){ if(open1[y*w]){bgMask[y*w]=1; push(0,y);} if(open1[y*w+(w-1)]){bgMask[y*w+(w-1)]=1; push(w-1,y);} }
-    while(qx.length){
-      var XY=pop(), X=XY[0], Y=XY[1], id=Y*w+X;
-      if(X>0){ var i1=id-1; if(!bgMask[i1] && open1[i1]){bgMask[i1]=1; push(X-1,Y);} }
-      if(X<w-1){ var i2=id+1; if(!bgMask[i2] && open1[i2]){bgMask[i2]=1; push(X+1,Y);} }
-      if(Y>0){ var i3=id-w; if(!bgMask[i3] && open1[i3]){bgMask[i3]=1; push(X,Y-1);} }
-      if(Y<h-1){ var i4=id+w; if(!bgMask[i4] && open1[i4]){bgMask[i4]=1; push(X,Y+1);} }
+    // 3) flood desde bordes => fondo seguro
+    const bgMask=new Uint8Array(w*h);
+    const st=[]; const push=(x,y)=>st.push(x,y);
+    for(let x=0;x<w;x++){ if(open01[x]){bgMask[x]=1; push(x,0);} if(open01[(h-1)*w+x]){bgMask[(h-1)*w+x]=1; push(x,h-1);} }
+    for(let y=0;y<h;y++){ if(open01[y*w]){bgMask[y*w]=1; push(0,y);} if(open01[y*w+(w-1)]){bgMask[y*w+(w-1)]=1; push(w-1,y);} }
+    while(st.length){
+      const y=st.pop(), x=st.pop(), id=y*w+x;
+      if(x>0){ const i1=id-1; if(!bgMask[i1] && open01[i1]){bgMask[i1]=1; push(x-1,y);} }
+      if(x<w-1){ const i2=id+1; if(!bgMask[i2] && open01[i2]){bgMask[i2]=1; push(x+1,y);} }
+      if(y>0){ const i3=id-w; if(!bgMask[i3] && open01[i3]){bgMask[i3]=1; push(x,y-1);} }
+      if(y<h-1){ const i4=id+w; if(!bgMask[i4] && open01[i4]){bgMask[i4]=1; push(x,y+1);} }
     }
 
-    // 4) islas internas (fondo encerrado)
+    // 4) islas internas
     if(removeHoles){
-      var vis=new Uint8Array(w*h);
-      for(var yy=1; yy<h-1; yy++){
-        for(var xx=1; xx<w-1; xx++){
-          var id0=yy*w+xx;
-          if(vis[id0] || bgMask[id0] || open1[id0]!==1) { vis[id0]=1; continue; }
-          var stack=[id0], region=[], touchesEdge=false; vis[id0]=1;
-          while(stack.length){
-            var cur=stack.pop(); region.push(cur);
-            var cx=cur%w, cy=(cur-cx)/w;
-            if(cx===0||cy===0||cx===w-1||cy===h-1) touchesEdge=true;
-            var nbs=[cur-1,cur+1,cur-w,cur+w];
-            for(var k=0;k<4;k++){
-              var nb=nbs[k];
-              if(nb<0||nb>=w*h) continue;
-              if(vis[nb]) continue;
-              if(bgMask[nb]) continue;
-              if(open1[nb]!==1) continue;
-              vis[nb]=1;
-              stack.push(nb);
+      const vis=new Uint8Array(w*h);
+      for(let yy=1; yy<h-1; yy++){
+        for(let xx=1; xx<w-1; xx++){
+          const id0=yy*w+xx;
+          if(vis[id0] || bgMask[id0] || open01[id0]!==1){ vis[id0]=1; continue; }
+          let region=[], st2=[id0]; vis[id0]=1; let touches=false;
+          while(st2.length){
+            const cur=st2.pop(); region.push(cur);
+            const cx=cur%w, cy=(cur-cx)/w;
+            if(cx===0||cy===0||cx===w-1||cy===h-1) touches=true;
+            const nbs=[cur-1,cur+1,cur-w,cur+w];
+            for(let k=0;k<4;k++){
+              const nb=nbs[k]; if(nb<0||nb>=w*h) continue;
+              if(vis[nb]||bgMask[nb]||open01[nb]!==1) continue;
+              vis[nb]=1; st2.push(nb);
             }
           }
-          if(!touchesEdge){ for(var rgn=0;rgn<region.length;rgn++) bgMask[region[rgn]]=1; }
+          if(!touches){ for(let r=0;r<region.length;r++) bgMask[region[r]]=1; }
         }
       }
     }
 
-    // 5) máscara del sticker + anti-halo leve (recorta 1, repone 2)
-    var sticker=new Uint8ClampedArray(w*h);
-    for(var p=0;p<sticker.length;p++) sticker[p]=bgMask[p]?0:255;
+    // 5) máscara sticker base (invertir)
+    let sticker=new Uint8ClampedArray(w*h);
+    for(let p=0;p<sticker.length;p++) sticker[p]=bgMask[p]?0:255;
+
+    // anti-halo leve (recorta 1, repone 2)
     sticker = erode(sticker,w,h);
     sticker = dilate(sticker,w,h);
     sticker = dilate(sticker,w,h);
 
-    return sticker;
+    return {mask:sticker};
   }
 
-  // ===== Aplicar máscara con borde liso SOLO en frontera (sin tocar color) =====
-  function applyMaskSmoothBoundaryOnly(src, mask, doSmooth){
-    var d=src.data, w=src.width, h=src.height;
+  function hsvDist(a,b){
+    let dh=Math.abs(a.h-b.h); dh=Math.min(dh,1-dh);
+    const ds=a.s-b.s, dv=a.v-b.v;
+    return Math.sqrt( (5*dh*dh)+(2*ds*ds)+(1*dv*dv) );
+  }
 
-    // alpha base 0/1
-    var A = new Float32Array(mask.length);
-    for (var i=0;i<mask.length;i++) A[i] = mask[i]/255;
+  function binTo255(u8){ const out=new Uint8ClampedArray(u8.length); for(let i=0;i<u8.length;i++) out[i]=u8[i]?255:0; return out; }
 
+  // ------- Apply: alpha-only; suavizado SOLO en banda estrecha -------
+  function applyMaskAlphaOnly(src, mask, doSmooth, bandPx){
+    const d=src.data, w=src.width, h=src.height;
+
+    // alfa base 0/1
+    const A=new Float32Array(mask.length); for(let i=0;i<mask.length;i++) A[i]=mask[i]/255;
+
+    // detectar frontera (borde sticker) y expandir a "banda" (unknown)
+    let boundary=new Uint8Array(A.length);
+    for(let y=1;y<h-1;y++){ for(let x=1;x<w-1;x++){
+      const id=y*w+x;
+      if(A[id]===1 && (A[id-1]===0 || A[id+1]===0 || A[id-w]===0 || A[id+w]===0)){ boundary[id]=1; }
+    }} 
+    // dilatar frontera bandPx veces para crear banda
+    for(let t=0;t<bandPx;t++){ boundary = dilate(boundary,w,h); }
+
+    // blur 3x3 SOLO en la banda
     if(doSmooth){
-      // detectar frontera: píxel con A=1 y algún vecino A=0
-      var boundary = new Uint8Array(A.length);
-      for(let y=1;y<h-1;y++){
-        for(let x=1;x<w-1;x++){
-          let id=y*w+x;
-          if(A[id]===1){
-            if(A[id-1]===0 || A[id+1]===0 || A[id-w]===0 || A[id+w]===0){
-              boundary[id]=1;
-            }
-          }
+      const B=new Float32Array(A.length);
+      for(let y=1;y<h-1;y++){ for(let x=1;x<w-1;x++){
+        const id=y*w+x;
+        if(boundary[id]){
+          let s=0;
+          s+=A[id]+A[id-1]+A[id+1]+A[id-w]+A[id+w]+A[id-w-1]+A[id-w+1]+A[id+w-1]+A[id+w+1];
+          B[id]=s/9;
+        }else{
+          B[id]=A[id];
         }
-      }
-      // blur muy suave 3x3 SOLO en frontera
-      var B = new Float32Array(A.length);
-      for(let y=1;y<h-1;y++){
-        for(let x=1;x<w-1;x++){
-          let id=y*w+x;
-          if(boundary[id]){
-            let s=0;
-            s+=A[id]; s+=A[id-1]; s+=A[id+1]; s+=A[id-w]; s+=A[id+w];
-            s+=A[id-w-1]; s+=A[id-w+1]; s+=A[id+w-1]; s+=A[id+w+1];
-            B[id]=s/9;
-          }else{
-            B[id]=A[id]; // interior y fondo se mantienen exactos
-          }
-        }
-      }
-      A = B;
+      }}
+      A.set(B);
     }
 
-    // endurecer un poco para evitar grises
+    // endurecer levemente para evitar velos grises; no tocar interior
     for(let i=0;i<A.length;i++){
       let a=A[i];
-      if(a<0.02) a=0;
-      else if(a>0.98) a=1;
-      else a = Math.pow(a, 0.85);
+      if(a<0.02) a=0; else if(a>0.98) a=1; else a=Math.pow(a,0.9);
       A[i]=a;
     }
 
-    // composición: NO tocamos el color. protegemos blanco puro.
+    // aplicar: color intacto; blanco puro siempre opaco
     for(let i=0,p=0;i<d.length;i+=4,p++){
-      let r=d[i], g=d[i+1], b=d[i+2], a=A[p];
-
-      let mx=Math.max(r,g,b), mn=Math.min(r,g,b);
+      const r=d[i], g=d[i+1], b=d[i+2];
+      const mx=Math.max(r,g,b), mn=Math.min(r,g,b);
       if(mx>245 && mn>225){ d[i]=255; d[i+1]=255; d[i+2]=255; d[i+3]=255; continue; }
-
-      d[i+3] = Math.round(a*255);
+      d[i+3]=Math.round(A[p]*255);
     }
     ctx.putImageData(src,0,0);
   }
