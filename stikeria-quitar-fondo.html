@@ -36,7 +36,7 @@
     </label>
     <label><input id="holes" type="checkbox" checked> Quitar islas internas</label>
     <label><input id="smoothEdge" type="checkbox" checked> Borde liso (anti-picos)</label>
-    <label><input id="protectColors" type="checkbox" checked> Proteger colores</label>
+    <label><input id="protectColors" type="checkbox" checked> Proteger colores (vidrio/amarillos)</label>
   </div>
 
   <canvas id="cv"></canvas>
@@ -101,27 +101,22 @@
     var ds=a.s-b.s, dv=a.v-b.v;
     return Math.sqrt( (5*dh*dh)+(2*ds*ds)+(1*dv*dv) );
   }
-  function toGray(data,w,h){
-    var g=new Uint8ClampedArray(w*h);
-    for(var i=0,p=0;i<data.length;i+=4,p++){
-      g[p]=(0.299*data[i]+0.587*data[i+1]+0.114*data[i+2])|0;
-    }
-    return g;
-  }
-  function sobel(gray,w,h){
-    var out=new Uint8ClampedArray(w*h);
-    for(var y=1;y<h-1;y++){
-      for(var x=1;x<w-1;x++){
-        var i=y*w+x;
-        var gx = -gray[i-w-1]-2*gray[i-1]-gray[i+w-1] + gray[i-w+1]+2*gray[i+1]+gray[i+w+1];
-        var gy = -gray[i-w-1]-2*gray[i-w]-gray[i-w+1] + gray[i+w-1]+2*gray[i+w]+gray[i+w+1];
-        out[i]=Math.min(255, Math.hypot(gx,gy)|0);
+
+  function sampleBG(data,w,h){
+    var s=Math.max(6, Math.floor(Math.min(w,h)*0.06));
+    var sum=[0,0,0], n=0;
+    function accum(x0,y0){
+      for(var y=y0;y<y0+s;y++){
+        for(var x=x0;x<x0+s;x++){
+          var i=(y*w+x)*4; sum[0]+=data[i]; sum[1]+=data[i+1]; sum[2]+=data[i+2]; n++;
+        }
       }
     }
-    return out;
+    accum(0,0); accum(w-s,0); accum(0,h-s); accum(w-s,h-s);
+    return {r:sum[0]/n, g:sum[1]/n, b:sum[2]/n};
   }
 
-  // ===== Morfología binaria (3x3) =====
+  // ===== Morfología binaria (3x3) sin difuminar =====
   function erode(mask,w,h){
     var src=mask, out=new Uint8ClampedArray(src.length);
     for(var y=0;y<h;y++){
@@ -159,15 +154,11 @@
   function binTo255(u8){ var out=new Uint8ClampedArray(u8.length); for(var i=0;i<u8.length;i++) out[i]=u8[i]?255:0; return out; }
   function to01(u8){ var out=new Uint8Array(u8.length); for(var i=0;i<u8.length;i++) out[i]=u8[i]>0?1:0; return out; }
 
-  // ===== Máscara con islas + protecciones + protección por bordes (Sobel) =====
+  // ===== Máscara con islas + protecciones de color =====
   function buildMask(imgData, T, removeHoles, protectCol){
     var d=imgData.data, w=imgData.width, h=imgData.height;
     var bg = sampleBG(d,w,h);
     var bgH = rgb2hsv(bg.r,bg.g,bg.b);
-
-    // detección de bordes para proteger el dibujo
-    var edges = sobel(toGray(d,w,h), w, h);
-    var edgeThr = 22; // más alto = más protección
 
     // 1) candidatos a fondo por color (con protecciones)
     var cand=new Uint8Array(w*h);
@@ -176,19 +167,16 @@
       var hsv=rgb2hsv(r,g,b);
       var isBg = (hsvDistW(hsv,bgH) <= T);
 
-      // protege blanco puro (borde blanco del sticker)
+      // protege blancos puros (borde blanco del sticker)
       var mx=Math.max(r,g,b), mn=Math.min(r,g,b);
       if(mx>245 && mn>225) isBg=false;
 
-      // protege bordes fuertes (no comer color en líneas/contornos)
-      if(edges[p] > edgeThr) isBg=false;
-
       if(protectCol){
-        // protege amarillos/altas saturaciones lejos del tono de fondo
+        // protege amarillos/altas saturaciones alejadas del fondo
         var hueDiff = Math.min(Math.abs(hsv.h - bgH.h), 1-Math.abs(hsv.h - bgH.h));
         if(hsv.s>0.28 && hueDiff>0.08) isBg=false;
         // protege vidrios/azules (fríos saturados)
-        if(hsv.s>0.22 && (hsv.h<0.20 || hsv.h>0.55)) isBg=false;
+        if(hsv.s>0.22 && (hsv.h<0.2 || hsv.h>0.55)) isBg=false;
       }
 
       cand[p]=isBg?1:0;
@@ -199,17 +187,19 @@
     open = dilate(open, w, h);
     var open1 = to01(open);
 
-    // 3) fondo conectado al borde (flood 4-conectado)
+    // 3) fondo conectado al borde (flood)
     var bgMask = new Uint8Array(w*h);
-    var stack=[], push=(x,y)=>stack.push(x,y);
+    var qx=[], qy=[];
+    function push(x,y){ qx.push(x); qy.push(y); }
+    function pop(){ return [qx.pop(), qy.pop()]; }
     for(var x=0;x<w;x++){ if(open1[x]){bgMask[x]=1; push(x,0);} if(open1[(h-1)*w+x]){bgMask[(h-1)*w+x]=1; push(x,h-1);} }
     for(var y=0;y<h;y++){ if(open1[y*w]){bgMask[y*w]=1; push(0,y);} if(open1[y*w+(w-1)]){bgMask[y*w+(w-1)]=1; push(w-1,y);} }
-    while(stack.length){
-      var y=stack.pop(), x=stack.pop(), id=y*w+x;
-      if(x>0){ var i1=id-1; if(!bgMask[i1] && open1[i1]){bgMask[i1]=1; push(x-1,y);} }
-      if(x<w-1){ var i2=id+1; if(!bgMask[i2] && open1[i2]){bgMask[i2]=1; push(x+1,y);} }
-      if(y>0){ var i3=id-w; if(!bgMask[i3] && open1[i3]){bgMask[i3]=1; push(x,y-1);} }
-      if(y<h-1){ var i4=id+w; if(!bgMask[i4] && open1[i4]){bgMask[i4]=1; push(x,y+1);} }
+    while(qx.length){
+      var XY=pop(), X=XY[0], Y=XY[1], id=Y*w+X;
+      if(X>0){ var i1=id-1; if(!bgMask[i1] && open1[i1]){bgMask[i1]=1; push(X-1,Y);} }
+      if(X<w-1){ var i2=id+1; if(!bgMask[i2] && open1[i2]){bgMask[i2]=1; push(X+1,Y);} }
+      if(Y>0){ var i3=id-w; if(!bgMask[i3] && open1[i3]){bgMask[i3]=1; push(X,Y-1);} }
+      if(Y<h-1){ var i4=id+w; if(!bgMask[i4] && open1[i4]){bgMask[i4]=1; push(X,Y+1);} }
     }
 
     // 4) islas internas (fondo encerrado)
@@ -219,19 +209,23 @@
         for(var xx=1; xx<w-1; xx++){
           var id0=yy*w+xx;
           if(vis[id0] || bgMask[id0] || open1[id0]!==1) { vis[id0]=1; continue; }
-          var region=[], st=[id0]; vis[id0]=1; var touches=false;
-          while(st.length){
-            var cur=st.pop(); region.push(cur);
+          var stack=[id0], region=[], touchesEdge=false; vis[id0]=1;
+          while(stack.length){
+            var cur=stack.pop(); region.push(cur);
             var cx=cur%w, cy=(cur-cx)/w;
-            if(cx===0||cy===0||cx===w-1||cy===h-1) touches=true;
+            if(cx===0||cy===0||cx===w-1||cy===h-1) touchesEdge=true;
             var nbs=[cur-1,cur+1,cur-w,cur+w];
             for(var k=0;k<4;k++){
-              var nb=nbs[k]; if(nb<0||nb>=w*h) continue;
-              if(vis[nb]||bgMask[nb]||open1[nb]!==1) continue;
-              vis[nb]=1; st.push(nb);
+              var nb=nbs[k];
+              if(nb<0||nb>=w*h) continue;
+              if(vis[nb]) continue;
+              if(bgMask[nb]) continue;
+              if(open1[nb]!==1) continue;
+              vis[nb]=1;
+              stack.push(nb);
             }
           }
-          if(!touches){ for(var r=0;r<region.length;r++) bgMask[region[r]]=1; }
+          if(!touchesEdge){ for(var rgn=0;rgn<region.length;rgn++) bgMask[region[rgn]]=1; }
         }
       }
     }
@@ -246,7 +240,7 @@
     return sticker;
   }
 
-  // ===== Aplicar máscara con borde liso SOLO en frontera (color intacto) =====
+  // ===== Aplicar máscara con borde liso SOLO en frontera (sin tocar color) =====
   function applyMaskSmoothBoundaryOnly(src, mask, doSmooth){
     var d=src.data, w=src.width, h=src.height;
 
@@ -255,17 +249,19 @@
     for (var i=0;i<mask.length;i++) A[i] = mask[i]/255;
 
     if(doSmooth){
-      // frontera: píxel sticker con vecino fondo
+      // detectar frontera: píxel con A=1 y algún vecino A=0
       var boundary = new Uint8Array(A.length);
       for(let y=1;y<h-1;y++){
         for(let x=1;x<w-1;x++){
           let id=y*w+x;
-          if(A[id]===1 && (A[id-1]===0 || A[id+1]===0 || A[id-w]===0 || A[id+w]===0)){
-            boundary[id]=1;
+          if(A[id]===1){
+            if(A[id-1]===0 || A[id+1]===0 || A[id-w]===0 || A[id+w]===0){
+              boundary[id]=1;
+            }
           }
         }
       }
-      // blur 3x3 SOLO en frontera
+      // blur muy suave 3x3 SOLO en frontera
       var B = new Float32Array(A.length);
       for(let y=1;y<h-1;y++){
         for(let x=1;x<w-1;x++){
@@ -276,46 +272,33 @@
             s+=A[id-w-1]; s+=A[id-w+1]; s+=A[id+w-1]; s+=A[id+w+1];
             B[id]=s/9;
           }else{
-            B[id]=A[id];
+            B[id]=A[id]; // interior y fondo se mantienen exactos
           }
         }
       }
       A = B;
     }
 
-    // endurecer levemente para evitar velos grises
+    // endurecer un poco para evitar grises
     for(let i=0;i<A.length;i++){
       let a=A[i];
       if(a<0.02) a=0;
       else if(a>0.98) a=1;
-      else a = Math.pow(a, 0.9);
+      else a = Math.pow(a, 0.85);
       A[i]=a;
     }
 
-    // aplicar: color intacto; blanco puro 100% opaco
+    // composición: NO tocamos el color. protegemos blanco puro.
     for(let i=0,p=0;i<d.length;i+=4,p++){
       let r=d[i], g=d[i+1], b=d[i+2], a=A[p];
+
       let mx=Math.max(r,g,b), mn=Math.min(r,g,b);
       if(mx>245 && mn>225){ d[i]=255; d[i+1]=255; d[i+2]=255; d[i+3]=255; continue; }
+
       d[i+3] = Math.round(a*255);
     }
     ctx.putImageData(src,0,0);
   }
-
-  function sampleBG(data,w,h){
-    var s=Math.max(6, Math.floor(Math.min(w,h)*0.06));
-    var sum=[0,0,0], n=0;
-    function accum(x0,y0){
-      for(var y=y0;y<y0+s;y++){
-        for(var x=x0;x<x0+s;x++){
-          var i=(y*w+x)*4; sum[0]+=data[i]; sum[1]+=data[i+1]; sum[2]+=data[i+2]; n++;
-        }
-      }
-    }
-    accum(0,0); accum(w-s,0); accum(0,h-s); accum(w-s,h-s);
-    return {r:sum[0]/n, g:sum[1]/n, b:sum[2]/n};
-  }
-
 })();
 </script>
 </body>
