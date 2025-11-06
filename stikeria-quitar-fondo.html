@@ -1,148 +1,295 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Quitar Fondo sin dañar colores</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Quitar Fondo — Stikeria (anti-islas + borde nítido)</title>
 <style>
-  body {
-    font-family: Arial, sans-serif;
-    background: #f3f4f6;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 15px;
-    padding: 20px;
-  }
-  h1 { color: #333; margin-bottom: 10px; }
-  canvas {
-    border: 1px solid #ccc;
-    border-radius: 10px;
-    background: white;
-    max-width: 350px;
-    max-height: 350px;
-  }
-  .buttons {
-    display: flex;
-    gap: 10px;
-    flex-wrap: wrap;
-    justify-content: center;
-  }
-  button {
-    background: #4f46e5;
-    color: white;
-    border: none;
-    border-radius: 6px;
-    padding: 10px 20px;
-    cursor: pointer;
-    font-size: 16px;
-  }
-  button:hover { background: #4338ca; }
-  input[type="file"] {
-    background: white;
-    border: 1px solid #ccc;
-    border-radius: 6px;
-    padding: 8px;
-  }
+  body{font-family:Arial, sans-serif;background:#0f1014;color:#eef1f6;margin:0;padding:20px}
+  .box{max-width:760px;margin:auto;background:#151826;border:1px solid #262a3f;border-radius:16px;padding:16px;box-shadow:0 6px 24px rgba(0,0,0,.35)}
+  h2{margin:0 0 10px;text-align:center}
+  .bar{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-bottom:10px}
+  button{padding:10px 14px;border:0;border-radius:10px;font-weight:800;cursor:pointer}
+  #btnUp{background:#2c7be5;color:#fff}
+  #btnGo{background:#34c38f;color:#fff}
+  #btnDl{background:#e83e8c;color:#fff}
+  canvas{width:100%;background:#0f111a;border-radius:10px}
+  .mini{display:flex;gap:12px;justify-content:center;align-items:center;margin:8px 0 4px}
+  .mini label{font-size:12px;color:#cfe1ff;display:flex;align-items:center;gap:6px}
+  input[type="range"]{accent-color:#2c7be5}
 </style>
 </head>
 <body>
+<div class="box">
+  <h2>Quitar Fondo — Stikeria</h2>
+  <div class="bar">
+    <button id="btnUp">Subir imagen</button>
+    <input id="file" type="file" accept="image/png,image/jpeg,image/webp" style="display:none">
+    <button id="btnGo" disabled>Quitar fondo</button>
+    <button id="btnDl" disabled>Descargar 512×512</button>
+  </div>
 
-<h1>Quitar fondo del sticker</h1>
+  <div class="mini">
+    <label>🎚️ Tolerancia
+      <input id="tol" type="range" min="20" max="100" value="60">
+      <span id="tolv">60</span>
+    </label>
+    <label><input id="holes" type="checkbox" checked> Quitar islas internas</label>
+    <label><input id="hard" type="checkbox" checked> Borde nítido</label>
+  </div>
 
-<div class="buttons">
-  <input type="file" id="fileInput" accept="image/*">
-  <button id="removeBtn">Quitar fondo</button>
-  <button id="downloadBtn">Descargar PNG</button>
+  <canvas id="cv"></canvas>
 </div>
 
-<canvas id="canvas"></canvas>
-
 <script>
-const fileInput = document.getElementById("fileInput");
-const removeBtn = document.getElementById("removeBtn");
-const downloadBtn = document.getElementById("downloadBtn");
-const canvas = document.getElementById("canvas");
-const ctx = canvas.getContext("2d");
-let image = null;
+(function(){
+  var q = id => document.getElementById(id);
+  var cv=q('cv'), ctx=cv.getContext('2d',{willReadFrequently:true});
+  var btnUp=q('btnUp'), file=q('file'), btnGo=q('btnGo'), btnDl=q('btnDl');
+  var tol=q('tol'), tolv=q('tolv'), holes=q('holes'), hard=q('hard');
 
-fileInput.addEventListener("change", e => {
-  const file = e.target.files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = ev => {
-    const img = new Image();
-    img.onload = () => {
-      const max = 350;
-      const scale = Math.min(max / img.width, max / img.height, 1);
-      canvas.width = img.width * scale;
-      canvas.height = img.height * scale;
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      image = img;
+  var img=null, W=0, H=0;
+
+  tol.oninput=function(){ tolv.textContent=tol.value; };
+
+  btnUp.onclick=function(){ file.click(); };
+  file.onchange=function(e){
+    var f=e.target.files && e.target.files[0]; if(!f) return;
+    img=new Image();
+    img.onload=function(){
+      W=img.naturalWidth; H=img.naturalHeight;
+      cv.width=W; cv.height=H;
+      ctx.clearRect(0,0,W,H); ctx.drawImage(img,0,0,W,H);
+      btnGo.disabled=false; btnDl.disabled=true;
     };
-    img.src = ev.target.result;
+    img.src=URL.createObjectURL(f);
   };
-  reader.readAsDataURL(file);
-});
 
-removeBtn.addEventListener("click", () => {
-  if (!image) return;
+  btnGo.onclick=function(){
+    if(!img) return;
+    var src=ctx.getImageData(0,0,W,H);
+    var mask = buildMask(src, Number(tol.value)/100, holes.checked, hard.checked);
+    applyMask(src, mask);
+    btnDl.disabled=false;
+  };
 
-  const w = canvas.width, h = canvas.height;
-  const imgData = ctx.getImageData(0, 0, w, h);
-  const data = imgData.data;
+  btnDl.onclick=function(){
+    var out=document.createElement('canvas'); out.width=512; out.height=512;
+    var c=out.getContext('2d'); c.clearRect(0,0,512,512);
+    var s=Math.min(512/W,512/H), nw=W*s, nh=H*s;
+    c.imageSmoothingEnabled=true; c.imageSmoothingQuality='high';
+    c.drawImage(cv, (512-nw)/2, (512-nh)/2, nw, nh);
+    var a=document.createElement('a'); a.download='sticker_512.png'; a.href=out.toDataURL('image/png'); a.click();
+  };
 
-  // Detectar color de fondo promediando los bordes
-  const margin = 5;
-  let r = 0, g = 0, b = 0, count = 0;
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      if (x < margin || y < margin || x >= w - margin || y >= h - margin) {
-        const i = (y * w + x) * 4;
-        r += data[i];
-        g += data[i + 1];
-        b += data[i + 2];
-        count++;
+  // ===== Utiles de color / HSV =====
+  function rgb2hsv(r,g,b){
+    r/=255; g/=255; b/=255;
+    var max=Math.max(r,g,b), min=Math.min(r,g,b), d=max-min, h=0, s=max===0?0:d/max, v=max;
+    if(d!==0){
+      if(max===r){ h=(g-b)/d+(g<b?6:0); }
+      else if(max===g){ h=(b-r)/d+2; }
+      else { h=(r-g)/d+4; }
+      h/=6;
+    }
+    return {h:h,s:s,v:v};
+  }
+  function hsvDistW(a,b){ // peso alto a Hue
+    var dh=Math.abs(a.h-b.h); dh=Math.min(dh,1-dh);
+    var ds=a.s-b.s, dv=a.v-b.v;
+    return Math.sqrt( (5*dh*dh)+(2*ds*ds)+(1*dv*dv) );
+  }
+
+  function sampleBG(data,w,h){
+    var s=Math.max(6, Math.floor(Math.min(w,h)*0.06));
+    var sum=[0,0,0], n=0;
+    function accum(x0,y0){
+      for(var y=y0;y<y0+s;y++){
+        for(var x=x0;x<x0+s;x++){
+          var i=(y*w+x)*4; sum[0]+=data[i]; sum[1]+=data[i+1]; sum[2]+=data[i+2]; n++;
+        }
       }
     }
+    accum(0,0); accum(w-s,0); accum(0,h-s); accum(w-s,h-s);
+    return {r:sum[0]/n, g:sum[1]/n, b:sum[2]/n};
   }
-  const bg = [r / count, g / count, b / count];
 
-  // Quitar fondo pero sin tocar colores cercanos
-  for (let i = 0; i < data.length; i += 4) {
-    const dr = data[i] - bg[0];
-    const dg = data[i + 1] - bg[1];
-    const db = data[i + 2] - bg[2];
-    const dist = Math.sqrt(dr * dr + dg * dg + db * db);
-
-    // Solo elimina los píxeles que son *muy* parecidos al fondo
-    if (dist < 35) { 
-      data[i + 3] = 0;
+  // ===== Morfología binaria (3x3) sin difuminado =====
+  function erode(mask,w,h){
+    var src=mask, out=new Uint8ClampedArray(src.length);
+    for(var y=0;y<h;y++){
+      for(var x=0;x<w;x++){
+        var id=y*w+x; if(src[id]===0){ out[id]=0; continue; }
+        var keep=255;
+        for(var yy=y-1;yy<=y+1;yy++){
+          for(var xx=x-1;xx<=x+1;xx++){
+            if(xx<0||yy<0||xx>=w||yy>=h) continue;
+            if(src[yy*w+xx]===0){ keep=0; break; }
+          } if(!keep) break;
+        }
+        out[id]=keep;
+      }
     }
+    return out;
   }
-
-  // Borde blanco mate
-  for (let i = 0; i < data.length; i += 4) {
-    if (data[i + 3] < 10) {
-      data[i] = 255;
-      data[i + 1] = 255;
-      data[i + 2] = 255;
-      data[i + 3] = 0;
+  function dilate(mask,w,h){
+    var src=mask, out=new Uint8ClampedArray(src.length);
+    for(var y=0;y<h;y++){
+      for(var x=0;x<w;x++){
+        var id=y*w+x; if(src[id]===255){ out[id]=255; continue; }
+        var on=0;
+        for(var yy=y-1;yy<=y+1;yy++){
+          for(var xx=x-1;xx<=x+1;xx++){
+            if(xx<0||yy<0||xx>=w||yy>=h) continue;
+            if(src[yy*w+xx]===255){ on=1; break; }
+          } if(on) break;
+        }
+        out[id]=on?255:0;
+      }
     }
+    return out;
   }
 
-  ctx.putImageData(imgData, 0, 0);
-});
+  // ===== Construcción de máscara con anti-islas + anti-halo =====
+  function buildMask(imgData, T, removeHoles, hardEdge){
+    var d=imgData.data, w=imgData.width, h=imgData.height;
+    var bg = sampleBG(d,w,h);
+    var bgH = rgb2hsv(bg.r,bg.g,bg.b);
 
-downloadBtn.addEventListener("click", () => {
-  canvas.toBlob(blob => {
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "sticker_sin_fondo.png";
-    a.click();
-  });
-});
+    // 1) candidatos a fondo por color
+    var cand=new Uint8Array(w*h);
+    for(var i=0,p=0;i<d.length;i+=4,p++){
+      var r=d[i], g=d[i+1], b=d[i+2];
+      var hsv=rgb2hsv(r,g,b);
+      var isBg = (hsvDistW(hsv,bgH) <= T);
+      // blanco puro = sticker (protege borde blanco)
+      var mx=Math.max(r,g,b), mn=Math.min(r,g,b);
+      if(mx>245 && mn>225) isBg=false;
+      cand[p]=isBg?1:0;
+    }
+
+    // 2) abrir una vez para cortar “hilos” de fondo
+    var open = erode(binTo255(cand), w, h);
+    open = dilate(open, w, h);
+    var open1 = to01(open);
+
+    // 3) flood desde bordes sobre open1 => fondo conectado al borde
+    var bgMask = new Uint8Array(w*h);
+    var qx=[], qy=[];
+    function push(x,y){ qx.push(x); qy.push(y); }
+    function pop(){ return [qx.pop(), qy.pop()]; }
+    for(var x=0;x<w;x++){ if(open1[x]){bgMask[x]=1; push(x,0);} if(open1[(h-1)*w+x]){bgMask[(h-1)*w+x]=1; push(x,h-1);} }
+    for(var y=0;y<h;y++){ if(open1[y*w]){bgMask[y*w]=1; push(0,y);} if(open1[y*w+(w-1)]){bgMask[y*w+(w-1)]=1; push(w-1,y);} }
+
+    while(qx.length){
+      var XY=pop(), X=XY[0], Y=XY[1];
+      var id=Y*w+X;
+      if(X>0){ var i1=id-1; if(!bgMask[i1] && open1[i1]){bgMask[i1]=1; push(X-1,Y);} }
+      if(X<w-1){ var i2=id+1; if(!bgMask[i2] && open1[i2]){bgMask[i2]=1; push(X+1,Y);} }
+      if(Y>0){ var i3=id-w; if(!bgMask[i3] && open1[i3]){bgMask[i3]=1; push(X,Y-1);} }
+      if(Y<h-1){ var i4=id+w; if(!bgMask[i4] && open1[i4]){bgMask[i4]=1; push(X,Y+1);} }
+    }
+
+    // 4) islas internas: regiones candidatas que no tocan borde
+    if(removeHoles){
+      var vis=new Uint8Array(w*h);
+      for(var yy=1; yy<h-1; yy++){
+        for(var xx=1; xx<w-1; xx++){
+          var id0=yy*w+xx;
+          if(vis[id0] || bgMask[id0] || open1[id0]!==1) { vis[id0]=1; continue; }
+          var stack=[id0], region=[], touchesEdge=false;
+          vis[id0]=1;
+          while(stack.length){
+            var cur=stack.pop(); region.push(cur);
+            var cx=cur%w, cy=(cur-cx)/w;
+            if(cx===0||cy===0||cx===w-1||cy===h-1) touchesEdge=true;
+            var nbs=[cur-1,cur+1,cur-w,cur+w];
+            for(var k=0;k<4;k++){
+              var nb=nbs[k];
+              if(nb<0||nb>=w*h) continue;
+              if(vis[nb]) continue;
+              if(bgMask[nb]) continue;
+              if(open1[nb]!==1) continue;
+              vis[nb]=1;
+              stack.push(nb);
+            }
+          }
+          if(!touchesEdge){
+            for(var r=0;r<region.length;r++) bgMask[region[r]]=1; // también fondo
+          }
+        }
+      }
+    }
+
+    // 5) máscara del sticker (invertir fondo)
+    var sticker=new Uint8ClampedArray(w*h);
+    for(var p=0;p<sticker.length;p++) sticker[p]=bgMask[p]?0:255;
+
+    // 6) anti-halo: recorta 1 px y re-engorda 2 px (borde nítido)
+    if(hardEdge){
+      sticker = erode(sticker,w,h);     // recorta 1
+      sticker = dilate(sticker,w,h);    // repone 1
+      sticker = dilate(sticker,w,h);    // engorda 1 extra → tapa halo
+    }
+
+    return sticker;
+  }
+
+  function binTo255(u8){
+    var out=new Uint8ClampedArray(u8.length);
+    for(var i=0;i<u8.length;i++) out[i]=u8[i]?255:0;
+    return out;
+  }
+  function to01(u8){
+    var out=new Uint8Array(u8.length);
+    for(var i=0;i<u8.length;i++) out[i]=u8[i]>0?1:0;
+    return out;
+  }
+
+  // ===== Composición con decontaminación en borde (sin tocar color interior) =====
+  function applyMask(src, mask){
+    var d=src.data, w=src.width, h=src.height;
+    // detectar zona de borde (vecinos mezcla 0/255)
+    var edge=new Uint8Array(mask.length);
+    for(var y=1;y<h-1;y++){
+      for(var x=1;x<w-1;x++){
+        var id=y*w+x;
+        var a=mask[id];
+        if(a===0||a===255){
+          var mix = (mask[id-1]!==a)||(mask[id+1]!==a)||(mask[id-w]!==a)||(mask[id+w]!==a);
+          edge[id]=mix?1:0;
+        }
+      }
+    }
+    // color de fondo medio para decontaminación
+    var bg = sampleBG(d,w,h);
+
+    for(var i=0,p=0;i<d.length;i+=4,p++){
+      var r=d[i], g=d[i+1], b=d[i+2];
+      var a=mask[p];
+
+      // proteger blanco puro (borde blanco de sticker)
+      var mx=Math.max(r,g,b), mn=Math.min(r,g,b);
+      if(mx>245 && mn>225){ d[i]=255; d[i+1]=255; d[i+2]=255; d[i+3]=255; continue; }
+
+      if(a===0){ d[i+3]=0; continue; }
+      if(a===255){ d[i+3]=255; continue; }
+
+      // si quedara semitransparente (raro), decontamina para quitar tinte de fondo
+      if(edge[p]){
+        var alpha=a/255;
+        var R=(r-(1-alpha)*bg.r)/alpha;
+        var G=(g-(1-alpha)*bg.g)/alpha;
+        var B=(b-(1-alpha)*bg.b)/alpha;
+        d[i]  = Math.max(0, Math.min(255, R));
+        d[i+1]= Math.max(0, Math.min(255, G));
+        d[i+2]= Math.max(0, Math.min(255, B));
+      }
+      d[i+3]=a;
+    }
+    ctx.putImageData(src,0,0);
+  }
+})();
 </script>
-
 </body>
 </html>
